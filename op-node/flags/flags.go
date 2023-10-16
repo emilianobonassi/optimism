@@ -353,12 +353,19 @@ var (
 		Value:    time.Second * 1,
 		Category: SequencerCategory,
 	}
+	DaRPC = &cli.StringFlag{
+		Name:    "da-rpc",
+		Usage:   "Data Availability RPC",
+		Value:   "http://da:26658",
+		EnvVars: prefixEnvVars("DA_RPC"),
+	}
 )
 
 var requiredFlags = []cli.Flag{
 	L1NodeAddr,
 	L2EngineAddr,
 	L2EngineJWTSecret,
+	DaRPC,
 }
 
 var optionalFlags = []cli.Flag{

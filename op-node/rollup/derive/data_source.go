@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 
+	"github.com/ethereum-optimism/optimism/op-node/da"
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
 	plasma "github.com/ethereum-optimism/optimism/op-plasma"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
@@ -49,13 +50,15 @@ type DataSourceFactory struct {
 	blobsFetcher  L1BlobsFetcher
 	plasmaFetcher PlasmaInputFetcher
 	ecotoneTime   *uint64
+	daCfg         *da.DAConfig
 }
 
-func NewDataSourceFactory(log log.Logger, cfg *rollup.Config, fetcher L1Fetcher, blobsFetcher L1BlobsFetcher, plasmaFetcher PlasmaInputFetcher) *DataSourceFactory {
+func NewDataSourceFactory(log log.Logger, cfg *rollup.Config, daCfg *da.DAConfig, fetcher L1Fetcher, blobsFetcher L1BlobsFetcher, plasmaFetcher PlasmaInputFetcher) *DataSourceFactory {
 	config := DataSourceConfig{
 		l1Signer:          cfg.L1Signer(),
 		batchInboxAddress: cfg.BatchInboxAddress,
 		plasmaEnabled:     cfg.UsePlasma,
+		daCfg:             daCfg,
 	}
 	return &DataSourceFactory{
 		log:           log,
@@ -78,7 +81,7 @@ func (ds *DataSourceFactory) OpenData(ctx context.Context, ref eth.L1BlockRef, b
 		}
 		src = NewBlobDataSource(ctx, ds.log, ds.dsCfg, ds.fetcher, ds.blobsFetcher, ref, batcherAddr)
 	} else {
-		src = NewCalldataSource(ctx, ds.log, ds.dsCfg, ds.fetcher, ref, batcherAddr)
+		src = NewCalldataSource(ctx, ds.log, ds.dsCfg, ds.daCfg, ds.fetcher, ref, batcherAddr)
 	}
 	if ds.dsCfg.plasmaEnabled {
 		// plasma([calldata | blobdata](l1Ref)) -> data
@@ -92,6 +95,7 @@ type DataSourceConfig struct {
 	l1Signer          types.Signer
 	batchInboxAddress common.Address
 	plasmaEnabled     bool
+	daCfg             *da.DAConfig
 }
 
 // isValidBatchTx returns true if:

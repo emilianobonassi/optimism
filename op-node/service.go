@@ -9,15 +9,20 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Layr-Labs/eigenda/api/grpc/retriever"
 	"github.com/ethereum-optimism/optimism/op-node/chaincfg"
 	plasma "github.com/ethereum-optimism/optimism/op-plasma"
 	"github.com/ethereum-optimism/optimism/op-service/oppprof"
 	"github.com/ethereum-optimism/optimism/op-service/sources"
+	"github.com/urfave/cli/v2"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/urfave/cli/v2"
 
+	"github.com/ethereum-optimism/optimism/op-node/da"
 	"github.com/ethereum-optimism/optimism/op-node/flags"
 	"github.com/ethereum-optimism/optimism/op-node/node"
 	p2pcli "github.com/ethereum-optimism/optimism/op-node/p2p/cli"
@@ -74,6 +79,11 @@ func NewConfig(ctx *cli.Context, log log.Logger) (*node.Config, error) {
 		haltOption = ""
 	}
 
+	daCfg, err := NewDAConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load da config: %w", err)
+	}
+
 	cfg := &node.Config{
 		L1:     l1Endpoint,
 		L2:     l2Endpoint,
@@ -111,6 +121,8 @@ func NewConfig(ctx *cli.Context, log log.Logger) (*node.Config, error) {
 		ConductorRpcTimeout: ctx.Duration(flags.ConductorRpcTimeoutFlag.Name),
 
 		Plasma: plasma.ReadCLIConfig(ctx),
+
+		DAConfig: daCfg,
 	}
 
 	if err := cfg.LoadPersisted(log); err != nil {
@@ -288,4 +300,18 @@ func NewSyncConfig(ctx *cli.Context, log log.Logger) (*sync.Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func NewDAConfig(ctx *cli.Context) (da.DAConfig, error) {
+	rpc := ctx.String(flags.DaRPC.Name)
+	conn, err := grpc.Dial(rpc, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return da.DAConfig{}, err
+	}
+	client := retriever.NewRetrieverClient(conn)
+
+	return da.DAConfig{
+		Rpc:    rpc,
+		Client: client,
+	}, nil
 }
