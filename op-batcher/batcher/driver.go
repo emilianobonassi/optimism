@@ -15,11 +15,14 @@ import (
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
 	plasma "github.com/ethereum-optimism/optimism/op-plasma"
 	"github.com/ethereum-optimism/optimism/op-service/dial"
+	"github.com/ethereum-optimism/optimism/op-service/eigenda"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-service/proto/gen/op_service/v1"
 	"github.com/ethereum-optimism/optimism/op-service/txmgr"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
+	"google.golang.org/protobuf/proto"
 )
 
 var ErrBatcherNotRunning = errors.New("batcher is not running")
@@ -47,6 +50,7 @@ type DriverSetup struct {
 	EndpointProvider dial.L2EndpointProvider
 	ChannelConfig    ChannelConfig
 	PlasmaDA         *plasma.DAClient
+	DA               eigenda.IEigenDA
 }
 
 // BatchSubmitter encapsulates a service responsible for submitting L2 tx
@@ -454,6 +458,44 @@ func (l *BatchSubmitter) sendTransaction(ctx context.Context, txdata txData, que
 			l.Log.Crit("unexpected number of frames in calldata tx", "num_frames", nf)
 		}
 		data := txdata.CallData()
+
+		var wrappedData []byte
+		blobInfo, err := l.DA.DisperseBlob(context.Background(), data)
+		if err != nil { // fallback to posting raw frame to calldata, although still within this proto wrapper
+			l.Log.Error("Unable to publish batch frameset to EigenDA, falling back to calldata", "err", err)
+			calldataFrame := &op_service.CalldataFrame{
+				Value: &op_service.CalldataFrame_Frame{
+					Frame: data,
+				},
+			}
+			wrappedData, err = proto.Marshal(calldataFrame)
+			if err != nil {
+				return err
+			}
+		} else { // happy path, post raw frame to eigenda then post frameRef to calldata
+			quorumIDs := make([]uint32, len(blobInfo.BlobHeader.BlobQuorumParams))
+			for i := range quorumIDs {
+				quorumIDs[i] = blobInfo.BlobHeader.BlobQuorumParams[i].QuorumNumber
+			}
+			calldataFrame := &op_service.CalldataFrame{
+				Value: &op_service.CalldataFrame_FrameRef{
+					FrameRef: &op_service.FrameRef{
+						BatchHeaderHash:      blobInfo.BlobVerificationProof.BatchMetadata.BatchHeaderHash,
+						BlobIndex:            blobInfo.BlobVerificationProof.BlobIndex,
+						ReferenceBlockNumber: blobInfo.BlobVerificationProof.BatchMetadata.BatchHeader.ReferenceBlockNumber,
+						QuorumIds:            quorumIDs,
+						BlobLength:           uint32(len(data)),
+					},
+				},
+			}
+			wrappedData, err = proto.Marshal(calldataFrame)
+			if err != nil {
+				return err
+			}
+		}
+
+		data = wrappedData
+
 		// if plasma DA is enabled we post the txdata to the DA Provider and replace it with the commitment.
 		if l.Config.UsePlasma {
 			comm, err := l.PlasmaDA.SetInput(ctx, data)
