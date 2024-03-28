@@ -9,20 +9,17 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Layr-Labs/eigenda/api/grpc/disperser"
 	"github.com/ethereum-optimism/optimism/op-node/chaincfg"
 	plasma "github.com/ethereum-optimism/optimism/op-plasma"
+	"github.com/ethereum-optimism/optimism/op-service/eigenda"
 	"github.com/ethereum-optimism/optimism/op-service/oppprof"
 	"github.com/ethereum-optimism/optimism/op-service/sources"
 	"github.com/urfave/cli/v2"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/log"
 
-	"github.com/ethereum-optimism/optimism/op-node/da"
 	"github.com/ethereum-optimism/optimism/op-node/flags"
 	"github.com/ethereum-optimism/optimism/op-node/node"
 	p2pcli "github.com/ethereum-optimism/optimism/op-node/p2p/cli"
@@ -79,7 +76,7 @@ func NewConfig(ctx *cli.Context, log log.Logger) (*node.Config, error) {
 		haltOption = ""
 	}
 
-	daCfg, err := NewDAConfig(ctx)
+	daCfg, err := NewEigenDAConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load da config: %w", err)
 	}
@@ -122,7 +119,7 @@ func NewConfig(ctx *cli.Context, log log.Logger) (*node.Config, error) {
 
 		Plasma: plasma.ReadCLIConfig(ctx),
 
-		DAConfig: daCfg,
+		DA: daCfg,
 	}
 
 	if err := cfg.LoadPersisted(log); err != nil {
@@ -302,16 +299,10 @@ func NewSyncConfig(ctx *cli.Context, log log.Logger) (*sync.Config, error) {
 	return cfg, nil
 }
 
-func NewDAConfig(ctx *cli.Context) (da.DAConfig, error) {
-	rpc := ctx.String(flags.DaRPC.Name)
-	conn, err := grpc.Dial(rpc, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return da.DAConfig{}, err
-	}
-	client := disperser.NewDisperserClient(conn)
-
-	return da.DAConfig{
-		Rpc:    rpc,
-		Client: client,
+func NewEigenDAConfig(ctx *cli.Context) (eigenda.Config, error) {
+	rpc := ctx.String(flags.DARPC.Name)
+	return eigenda.Config{
+		RPC: rpc,
+		// Can leave everything else unfilled for the node
 	}, nil
 }

@@ -14,8 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/Layr-Labs/eigenda/api/grpc/disperser"
-	"github.com/ethereum-optimism/optimism/op-node/da"
+	"github.com/ethereum-optimism/optimism/op-service/eigenda"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 	"github.com/ethereum-optimism/optimism/op-service/proto/gen/op_service/v1"
 )
@@ -34,12 +33,12 @@ type CalldataSource struct {
 	log     log.Logger
 
 	batcherAddr common.Address
-	daCfg       *da.DAConfig
+	daClient    eigenda.IEigenDA
 }
 
 // NewCalldataSource creates a new calldata source. It suppresses errors in fetching the L1 block if they occur.
 // If there is an error, it will attempt to fetch the result on the next call to `Next`.
-func NewCalldataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConfig, daCfg *da.DAConfig, fetcher L1TransactionFetcher, ref eth.L1BlockRef, batcherAddr common.Address) DataIter {
+func NewCalldataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConfig, fetcher L1TransactionFetcher, ref eth.L1BlockRef, batcherAddr common.Address, daClient eigenda.IEigenDA) DataIter {
 	_, txs, err := fetcher.InfoAndTxsByHash(ctx, ref.Hash)
 	if err != nil {
 		return &CalldataSource{
@@ -49,13 +48,12 @@ func NewCalldataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConf
 			fetcher:     fetcher,
 			log:         log,
 			batcherAddr: batcherAddr,
-			daCfg:       daCfg,
+			daClient:    daClient,
 		}
 	} else {
 		return &CalldataSource{
-			open:  true,
-			data:  DataFromEVMTransactions(dsCfg, daCfg, batcherAddr, txs, log.New("origin", ref)),
-			daCfg: daCfg,
+			open: true,
+			data: DataFromEVMTransactions(dsCfg, batcherAddr, txs, log.New("origin", ref), daClient),
 		}
 	}
 }
@@ -67,7 +65,7 @@ func (ds *CalldataSource) Next(ctx context.Context) (eth.Data, error) {
 	if !ds.open {
 		if _, txs, err := ds.fetcher.InfoAndTxsByHash(ctx, ds.ref.Hash); err == nil {
 			ds.open = true
-			ds.data = DataFromEVMTransactions(ds.dsCfg, ds.daCfg, ds.batcherAddr, txs, ds.log)
+			ds.data = DataFromEVMTransactions(ds.dsCfg, ds.batcherAddr, txs, ds.log, ds.daClient)
 		} else if errors.Is(err, ethereum.NotFound) {
 			return nil, NewResetError(fmt.Errorf("failed to open calldata source: %w", err))
 		} else {
@@ -86,7 +84,7 @@ func (ds *CalldataSource) Next(ctx context.Context) (eth.Data, error) {
 // DataFromEVMTransactions filters all of the transactions and returns the calldata from transactions
 // that are sent to the batch inbox address from the batch sender address.
 // This will return an empty array if no valid transactions are found.
-func DataFromEVMTransactions(dsCfg DataSourceConfig, daCfg *da.DAConfig, batcherAddr common.Address, txs types.Transactions, log log.Logger) []eth.Data {
+func DataFromEVMTransactions(dsCfg DataSourceConfig, batcherAddr common.Address, txs types.Transactions, log log.Logger, daClient eigenda.IEigenDA) []eth.Data {
 	out := []eth.Data{}
 	for j, tx := range txs {
 		if isValidBatchTx(tx, dsCfg.l1Signer, dsCfg.batchInboxAddress, batcherAddr) {
@@ -106,11 +104,7 @@ func DataFromEVMTransactions(dsCfg DataSourceConfig, daCfg *da.DAConfig, batcher
 				}
 
 				log.Info("requesting data from EigenDA", "quorum id", frameRef.QuorumIds[0], "confirmation block number", frameRef.ReferenceBlockNumber)
-				blobRequest := &disperser.RetrieveBlobRequest{
-					BatchHeaderHash: frameRef.BatchHeaderHash,
-					BlobIndex:       frameRef.BlobIndex,
-				}
-				blobRes, err := daCfg.Client.RetrieveBlob(context.Background(), blobRequest)
+				data, err := daClient.RetrieveBlob(context.Background(), frameRef.BatchHeaderHash, frameRef.BlobIndex)
 				if err != nil {
 					retrieveReqJSON, _ := json.Marshal(struct {
 						BatchHeaderHash string
@@ -123,7 +117,7 @@ func DataFromEVMTransactions(dsCfg DataSourceConfig, daCfg *da.DAConfig, batcher
 					return nil
 				}
 				log.Info("Successfully retrieved data from EigenDA", "quorum id", frameRef.QuorumIds[0], "confirmation block number", frameRef.ReferenceBlockNumber)
-				data := blobRes.Data[:frameRef.BlobLength]
+				data = data[:frameRef.BlobLength]
 				out = append(out, data)
 			case *op_service.CalldataFrame_Frame:
 				log.Info("Successfully read data from calldata (not EigenDA)")

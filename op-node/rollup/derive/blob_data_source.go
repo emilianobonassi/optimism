@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 
+	"github.com/ethereum-optimism/optimism/op-service/eigenda"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 )
 
@@ -30,10 +31,11 @@ type BlobDataSource struct {
 	fetcher      L1TransactionFetcher
 	blobsFetcher L1BlobsFetcher
 	log          log.Logger
+	daClient     eigenda.IEigenDA
 }
 
 // NewBlobDataSource creates a new blob data source.
-func NewBlobDataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConfig, fetcher L1TransactionFetcher, blobsFetcher L1BlobsFetcher, ref eth.L1BlockRef, batcherAddr common.Address) DataIter {
+func NewBlobDataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConfig, fetcher L1TransactionFetcher, blobsFetcher L1BlobsFetcher, ref eth.L1BlockRef, batcherAddr common.Address, daClient eigenda.IEigenDA) DataIter {
 	return &BlobDataSource{
 		ref:          ref,
 		dsCfg:        dsCfg,
@@ -41,6 +43,7 @@ func NewBlobDataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConf
 		log:          log.New("origin", ref),
 		batcherAddr:  batcherAddr,
 		blobsFetcher: blobsFetcher,
+		daClient:     daClient,
 	}
 }
 
@@ -86,7 +89,7 @@ func (ds *BlobDataSource) open(ctx context.Context) ([]blobOrCalldata, error) {
 		return nil, NewTemporaryError(fmt.Errorf("failed to open blob data source: %w", err))
 	}
 
-	data, hashes := dataAndHashesFromTxs(txs, &ds.dsCfg, ds.batcherAddr)
+	data, hashes := dataAndHashesFromTxs(txs, &ds.dsCfg, ds.batcherAddr, ds.daClient)
 
 	if len(hashes) == 0 {
 		// there are no blobs to fetch so we can return immediately
@@ -115,11 +118,12 @@ func (ds *BlobDataSource) open(ctx context.Context) ([]blobOrCalldata, error) {
 // dataAndHashesFromTxs extracts calldata and datahashes from the input transactions and returns them. It
 // creates a placeholder blobOrCalldata element for each returned blob hash that must be populated
 // by fillBlobPointers after blob bodies are retrieved.
-func dataAndHashesFromTxs(txs types.Transactions, config *DataSourceConfig, batcherAddr common.Address) ([]blobOrCalldata, []eth.IndexedBlobHash) {
+func dataAndHashesFromTxs(txs types.Transactions, config *DataSourceConfig, batcherAddr common.Address, daClient eigenda.IEigenDA) ([]blobOrCalldata, []eth.IndexedBlobHash) {
 	data := []blobOrCalldata{}
 	var hashes []eth.IndexedBlobHash
 	blobIndex := 0 // index of each blob in the block's blob sidecar
 	for _, tx := range txs {
+		logger := log.New("tx", tx.Hash())
 		// skip any non-batcher transactions
 		if !isValidBatchTx(tx, config.l1Signer, config.batchInboxAddress, batcherAddr) {
 			blobIndex += len(tx.BlobHashes())
@@ -127,8 +131,12 @@ func dataAndHashesFromTxs(txs types.Transactions, config *DataSourceConfig, batc
 		}
 		// handle non-blob batcher transactions by extracting their calldata
 		if tx.Type() != types.BlobTxType {
-			calldata := eth.Data(tx.Data())
-			data = append(data, blobOrCalldata{nil, &calldata})
+			calldata := DataFromEVMTransactions(*config, batcherAddr, types.Transactions{tx}, logger, daClient)
+			if len(calldata) == 0 {
+				log.Warn("eigenda: skipping empty calldata")
+				continue
+			}
+			data = append(data, blobOrCalldata{nil, &calldata[0]})
 			continue
 		}
 		// handle blob batcher transactions by extracting their blob hashes, ignoring any calldata.

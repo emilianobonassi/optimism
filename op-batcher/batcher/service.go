@@ -21,6 +21,7 @@ import (
 	plasma "github.com/ethereum-optimism/optimism/op-plasma"
 	"github.com/ethereum-optimism/optimism/op-service/cliapp"
 	"github.com/ethereum-optimism/optimism/op-service/dial"
+	"github.com/ethereum-optimism/optimism/op-service/eigenda"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 	"github.com/ethereum-optimism/optimism/op-service/httputil"
 	opmetrics "github.com/ethereum-optimism/optimism/op-service/metrics"
@@ -73,6 +74,8 @@ type BatcherService struct {
 	stopped         atomic.Bool
 
 	NotSubmittingOnStart bool
+
+	DA eigenda.IEigenDA
 }
 
 // BatcherServiceFromCLIConfig creates a new BatcherService from a CLIConfig.
@@ -118,6 +121,9 @@ func (bs *BatcherService) initFromCLIConfig(ctx context.Context, version string,
 	// init before driver
 	if err := bs.initPlasmaDA(cfg); err != nil {
 		return fmt.Errorf("failed to init plasma DA: %w", err)
+	}
+	if err := bs.initDA(cfg); err != nil {
+		return fmt.Errorf("failed to init DA: %w", err)
 	}
 	bs.initDriver()
 	if err := bs.initRPCServer(cfg); err != nil {
@@ -296,7 +302,20 @@ func (bs *BatcherService) initDriver() {
 		EndpointProvider: bs.EndpointProvider,
 		ChannelConfig:    bs.ChannelConfig,
 		PlasmaDA:         bs.PlasmaDA,
+		DA:               bs.DA,
 	})
+}
+
+func (bs *BatcherService) initDA(cfg *CLIConfig) error {
+	bs.DA = &eigenda.EigenDA{
+		Config: eigenda.Config{
+			RPC:                      cfg.DAConfig.RPC,
+			StatusQueryTimeout:       cfg.DAConfig.StatusQueryTimeout,
+			StatusQueryRetryInterval: cfg.DAConfig.StatusQueryRetryInterval,
+		},
+		Log: bs.Log,
+	}
+	return nil
 }
 
 func (bs *BatcherService) initRPCServer(cfg *CLIConfig) error {
