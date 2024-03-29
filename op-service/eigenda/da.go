@@ -57,8 +57,7 @@ func (m *EigenDA) DisperseBlob(ctx context.Context, txData []byte) (*disperser.B
 	daClient := disperser.NewDisperserClient(conn)
 
 	disperseReq := &disperser.DisperseBlobRequest{
-		Data:           txData,
-		SecurityParams: m.DisperserSecurityParams,
+		Data: txData,
 	}
 	disperseRes, err := daClient.DisperseBlob(ctx, disperseReq)
 
