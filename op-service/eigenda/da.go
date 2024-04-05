@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Layr-Labs/eigenda/api/grpc/disperser"
+	"github.com/Layr-Labs/eigenda/encoding/utils/codec"
 	"github.com/ethereum/go-ethereum/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -42,7 +43,11 @@ func (m *EigenDA) RetrieveBlob(ctx context.Context, BatchHeaderHash []byte, Blob
 	if err != nil {
 		return nil, err
 	}
-	return reply.Data, nil
+
+	// decode modulo bn254
+	decodedData := codec.RemoveEmptyByteFromPaddedBytes(reply.Data)
+
+	return decodedData, nil
 }
 
 func (m *EigenDA) DisperseBlob(ctx context.Context, txData []byte) (*disperser.BlobInfo, error) {
@@ -56,8 +61,11 @@ func (m *EigenDA) DisperseBlob(ctx context.Context, txData []byte) (*disperser.B
 	}
 	daClient := disperser.NewDisperserClient(conn)
 
+	// encode modulo bn254
+	encodedTxData := codec.ConvertByPaddingEmptyByte(txData)
+
 	disperseReq := &disperser.DisperseBlobRequest{
-		Data: txData,
+		Data: encodedTxData,
 	}
 	disperseRes, err := daClient.DisperseBlob(ctx, disperseReq)
 
