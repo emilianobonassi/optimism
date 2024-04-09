@@ -41,16 +41,17 @@ type RollupClient interface {
 
 // DriverSetup is the collection of input/output interfaces and configuration that the driver operates on.
 type DriverSetup struct {
-	Log              log.Logger
-	Metr             metrics.Metricer
-	RollupConfig     *rollup.Config
-	Config           BatcherConfig
-	Txmgr            txmgr.TxManager
-	L1Client         L1Client
-	EndpointProvider dial.L2EndpointProvider
-	ChannelConfig    ChannelConfig
-	PlasmaDA         *plasma.DAClient
-	DA               eigenda.IEigenDA
+	Log                     log.Logger
+	Metr                    metrics.Metricer
+	RollupConfig            *rollup.Config
+	Config                  BatcherConfig
+	Txmgr                   txmgr.TxManager
+	L1Client                L1Client
+	EndpointProvider        dial.L2EndpointProvider
+	ChannelConfig           ChannelConfig
+	PlasmaDA                *plasma.DAClient
+	DA                      eigenda.IEigenDA
+	PrefixDerivationEnabled bool
 }
 
 // BatchSubmitter encapsulates a service responsible for submitting L2 tx
@@ -463,14 +464,20 @@ func (l *BatchSubmitter) sendTransaction(ctx context.Context, txdata txData, que
 		blobInfo, err := l.DA.DisperseBlob(context.Background(), data)
 		if err != nil { // fallback to posting raw frame to calldata, although still within this proto wrapper
 			l.Log.Error("Unable to publish batch frameset to EigenDA, falling back to calldata", "err", err)
-			calldataFrame := &op_service.CalldataFrame{
-				Value: &op_service.CalldataFrame_Frame{
-					Frame: data,
-				},
-			}
-			wrappedData, err = proto.Marshal(calldataFrame)
-			if err != nil {
-				return err
+			if l.PrefixDerivationEnabled {
+				// do not wrap
+				l.Log.Info("Prefix derivation enabled, not wrapping calldata with FrameRef")
+				wrappedData = data
+			} else {
+				calldataFrame := &op_service.CalldataFrame{
+					Value: &op_service.CalldataFrame_Frame{
+						Frame: data,
+					},
+				}
+				wrappedData, err = proto.Marshal(calldataFrame)
+				if err != nil {
+					return err
+				}
 			}
 		} else { // happy path, post raw frame to eigenda then post frameRef to calldata
 			quorumIDs := make([]uint32, len(blobInfo.BlobHeader.BlobQuorumParams))
@@ -491,6 +498,12 @@ func (l *BatchSubmitter) sendTransaction(ctx context.Context, txdata txData, que
 			wrappedData, err = proto.Marshal(calldataFrame)
 			if err != nil {
 				return err
+			}
+
+			if l.PrefixDerivationEnabled {
+				// prepend the derivation version to the data
+				l.Log.Info("Prepending derivation version to calldata")
+				wrappedData = append([]byte{eigenda.DerivationVersionEigenda}, wrappedData...)
 			}
 		}
 

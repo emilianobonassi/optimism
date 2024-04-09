@@ -54,7 +54,8 @@ type Config struct {
 	// but if log-events are not coming in (e.g. not syncing blocks) then the reload ensures the config stays accurate.
 	RuntimeConfigReloadInterval time.Duration
 
-	DA eigenda.Config
+	DA                      eigenda.Config
+	PrefixDerivationEnabled bool
 
 	// Optional
 	Tracer    Tracer

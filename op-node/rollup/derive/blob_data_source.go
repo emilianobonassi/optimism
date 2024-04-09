@@ -24,26 +24,28 @@ type blobOrCalldata struct {
 // BlobDataSource fetches blobs or calldata as appropriate and transforms them into usable rollup
 // data.
 type BlobDataSource struct {
-	data         []blobOrCalldata
-	ref          eth.L1BlockRef
-	batcherAddr  common.Address
-	dsCfg        DataSourceConfig
-	fetcher      L1TransactionFetcher
-	blobsFetcher L1BlobsFetcher
-	log          log.Logger
-	daClient     eigenda.IEigenDA
+	data                    []blobOrCalldata
+	ref                     eth.L1BlockRef
+	batcherAddr             common.Address
+	dsCfg                   DataSourceConfig
+	fetcher                 L1TransactionFetcher
+	blobsFetcher            L1BlobsFetcher
+	log                     log.Logger
+	daClient                eigenda.IEigenDA
+	prefixDerivationEnabled bool
 }
 
 // NewBlobDataSource creates a new blob data source.
-func NewBlobDataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConfig, fetcher L1TransactionFetcher, blobsFetcher L1BlobsFetcher, ref eth.L1BlockRef, batcherAddr common.Address, daClient eigenda.IEigenDA) DataIter {
+func NewBlobDataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConfig, fetcher L1TransactionFetcher, blobsFetcher L1BlobsFetcher, ref eth.L1BlockRef, batcherAddr common.Address, daClient eigenda.IEigenDA, prefixDerivationEnabled bool) DataIter {
 	return &BlobDataSource{
-		ref:          ref,
-		dsCfg:        dsCfg,
-		fetcher:      fetcher,
-		log:          log.New("origin", ref),
-		batcherAddr:  batcherAddr,
-		blobsFetcher: blobsFetcher,
-		daClient:     daClient,
+		ref:                     ref,
+		dsCfg:                   dsCfg,
+		fetcher:                 fetcher,
+		log:                     log.New("origin", ref),
+		batcherAddr:             batcherAddr,
+		blobsFetcher:            blobsFetcher,
+		daClient:                daClient,
+		prefixDerivationEnabled: prefixDerivationEnabled,
 	}
 }
 
@@ -89,7 +91,7 @@ func (ds *BlobDataSource) open(ctx context.Context) ([]blobOrCalldata, error) {
 		return nil, NewTemporaryError(fmt.Errorf("failed to open blob data source: %w", err))
 	}
 
-	data, hashes := dataAndHashesFromTxs(txs, &ds.dsCfg, ds.batcherAddr, ds.daClient)
+	data, hashes := dataAndHashesFromTxs(txs, &ds.dsCfg, ds.batcherAddr, ds.daClient, ds.prefixDerivationEnabled)
 
 	if len(hashes) == 0 {
 		// there are no blobs to fetch so we can return immediately
@@ -118,7 +120,7 @@ func (ds *BlobDataSource) open(ctx context.Context) ([]blobOrCalldata, error) {
 // dataAndHashesFromTxs extracts calldata and datahashes from the input transactions and returns them. It
 // creates a placeholder blobOrCalldata element for each returned blob hash that must be populated
 // by fillBlobPointers after blob bodies are retrieved.
-func dataAndHashesFromTxs(txs types.Transactions, config *DataSourceConfig, batcherAddr common.Address, daClient eigenda.IEigenDA) ([]blobOrCalldata, []eth.IndexedBlobHash) {
+func dataAndHashesFromTxs(txs types.Transactions, config *DataSourceConfig, batcherAddr common.Address, daClient eigenda.IEigenDA, prefixDerivationEnabled bool) ([]blobOrCalldata, []eth.IndexedBlobHash) {
 	data := []blobOrCalldata{}
 	var hashes []eth.IndexedBlobHash
 	blobIndex := 0 // index of each blob in the block's blob sidecar
@@ -131,7 +133,7 @@ func dataAndHashesFromTxs(txs types.Transactions, config *DataSourceConfig, batc
 		}
 		// handle non-blob batcher transactions by extracting their calldata
 		if tx.Type() != types.BlobTxType {
-			calldata := DataFromEVMTransactions(*config, batcherAddr, types.Transactions{tx}, logger, daClient)
+			calldata := DataFromEVMTransactions(*config, batcherAddr, types.Transactions{tx}, logger, daClient, prefixDerivationEnabled)
 			if len(calldata) == 0 {
 				log.Warn("eigenda: skipping empty calldata")
 				continue

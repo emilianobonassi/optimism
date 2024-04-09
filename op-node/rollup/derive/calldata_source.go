@@ -32,28 +32,30 @@ type CalldataSource struct {
 	fetcher L1TransactionFetcher
 	log     log.Logger
 
-	batcherAddr common.Address
-	daClient    eigenda.IEigenDA
+	batcherAddr             common.Address
+	daClient                eigenda.IEigenDA
+	prefixDerivationEnabled bool
 }
 
 // NewCalldataSource creates a new calldata source. It suppresses errors in fetching the L1 block if they occur.
 // If there is an error, it will attempt to fetch the result on the next call to `Next`.
-func NewCalldataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConfig, fetcher L1TransactionFetcher, ref eth.L1BlockRef, batcherAddr common.Address, daClient eigenda.IEigenDA) DataIter {
+func NewCalldataSource(ctx context.Context, log log.Logger, dsCfg DataSourceConfig, fetcher L1TransactionFetcher, ref eth.L1BlockRef, batcherAddr common.Address, daClient eigenda.IEigenDA, prefixDerivationEnabled bool) DataIter {
 	_, txs, err := fetcher.InfoAndTxsByHash(ctx, ref.Hash)
 	if err != nil {
 		return &CalldataSource{
-			open:        false,
-			ref:         ref,
-			dsCfg:       dsCfg,
-			fetcher:     fetcher,
-			log:         log,
-			batcherAddr: batcherAddr,
-			daClient:    daClient,
+			open:                    false,
+			ref:                     ref,
+			dsCfg:                   dsCfg,
+			fetcher:                 fetcher,
+			log:                     log,
+			batcherAddr:             batcherAddr,
+			daClient:                daClient,
+			prefixDerivationEnabled: prefixDerivationEnabled,
 		}
 	} else {
 		return &CalldataSource{
 			open: true,
-			data: DataFromEVMTransactions(dsCfg, batcherAddr, txs, log.New("origin", ref), daClient),
+			data: DataFromEVMTransactions(dsCfg, batcherAddr, txs, log.New("origin", ref), daClient, prefixDerivationEnabled),
 		}
 	}
 }
@@ -65,7 +67,7 @@ func (ds *CalldataSource) Next(ctx context.Context) (eth.Data, error) {
 	if !ds.open {
 		if _, txs, err := ds.fetcher.InfoAndTxsByHash(ctx, ds.ref.Hash); err == nil {
 			ds.open = true
-			ds.data = DataFromEVMTransactions(ds.dsCfg, ds.batcherAddr, txs, ds.log, ds.daClient)
+			ds.data = DataFromEVMTransactions(ds.dsCfg, ds.batcherAddr, txs, ds.log, ds.daClient, ds.prefixDerivationEnabled)
 		} else if errors.Is(err, ethereum.NotFound) {
 			return nil, NewResetError(fmt.Errorf("failed to open calldata source: %w", err))
 		} else {
@@ -84,12 +86,37 @@ func (ds *CalldataSource) Next(ctx context.Context) (eth.Data, error) {
 // DataFromEVMTransactions filters all of the transactions and returns the calldata from transactions
 // that are sent to the batch inbox address from the batch sender address.
 // This will return an empty array if no valid transactions are found.
-func DataFromEVMTransactions(dsCfg DataSourceConfig, batcherAddr common.Address, txs types.Transactions, log log.Logger, daClient eigenda.IEigenDA) []eth.Data {
+func DataFromEVMTransactions(dsCfg DataSourceConfig, batcherAddr common.Address, txs types.Transactions, log log.Logger, daClient eigenda.IEigenDA, prefixDerivationEnabled bool) []eth.Data {
 	out := []eth.Data{}
 	for j, tx := range txs {
 		if isValidBatchTx(tx, dsCfg.l1Signer, dsCfg.batchInboxAddress, batcherAddr) {
+			data := tx.Data()
+
+			if prefixDerivationEnabled {
+				log.Info("Prefix derivation enabled, checking derivation version")
+				switch len(data) {
+				case 0:
+					out = append(out, data)
+					// skip next tx
+					continue
+				default:
+					switch data[0] {
+					case eigenda.DerivationVersionEigenda:
+						log.Info("EigenDA derivation version detected")
+						// skip the first byte and unwrap the data with protobuf
+						data = data[1:]
+					default:
+						log.Info("No EigenDA derivation version detected, falling back to calldata")
+						out = append(out, data)
+						log.Info("Successfully read data from calldata (not EigenDA)")
+						// skip next tx
+						continue
+					}
+				}
+			}
+
 			calldataFrame := &op_service.CalldataFrame{}
-			err := proto.Unmarshal(tx.Data(), calldataFrame)
+			err := proto.Unmarshal(data, calldataFrame)
 			if err != nil {
 				log.Warn("unable to decode calldata frame", "index", j, "err", err)
 				return nil
