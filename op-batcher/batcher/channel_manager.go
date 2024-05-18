@@ -450,6 +450,14 @@ var ErrPendingAfterClose = errors.New("pending channels remain after closing cha
 // the caller SHOULD drain pending channels by generating TxData repeatedly until there is none left (io.EOF).
 // A ErrPendingAfterClose error will be returned if there are any remaining pending channels to submit.
 func (s *channelManager) Close() error {
+	return s.close(false)
+}
+
+func (s *channelManager) CloseAndSubmitCurrentChannel() error {
+	return s.close(true)
+}
+
+func (s *channelManager) close(submitCurrentChannel bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -458,15 +466,19 @@ func (s *channelManager) Close() error {
 
 	s.closed = true
 	s.log.Info("Channel manager is closing")
-
-	// Any pending state can be proactively cleared if there are no submitted transactions
-	for _, ch := range s.channelQueue {
-		if ch.NoneSubmitted() {
-			s.log.Info("Channel has no past or pending submission - dropping", "id", ch.ID())
-			s.removePendingChannel(ch)
-		} else {
-			s.log.Info("Channel is in-flight and will need to be submitted after close", "id", ch.ID(), "confirmed", len(ch.confirmedTransactions), "pending", len(ch.pendingTransactions))
+	if !submitCurrentChannel {
+		// Any pending state can be proactively cleared if there are no submitted transactions
+		for _, ch := range s.channelQueue {
+			if ch.NoneSubmitted() {
+				s.log.Info("Channel has no past or pending submission - dropping", "id", ch.ID())
+				s.removePendingChannel(ch)
+			} else {
+				s.log.Info("Channel is in-flight and will need to be submitted after close", "id", ch.ID(), "confirmed", len(ch.confirmedTransactions), "pending", len(ch.pendingTransactions))
+			}
 		}
+	} else {
+		// Do not remove current channel if not yet submitted, so can be submitted after close.
+		s.log.Warn("Channel manager has not removed any not submitted channels")
 	}
 	s.log.Info("Reviewed all pending channels on close", "remaining", len(s.channelQueue))
 

@@ -119,6 +119,8 @@ type BatchSubmitter struct {
 	lastL1Tip       eth.L1BlockRef
 
 	state *channelManager
+
+	forceChannel chan int
 }
 
 // NewBatchSubmitter initializes the BatchSubmitter driver from a preconfigured DriverSetup
@@ -159,6 +161,7 @@ func (l *BatchSubmitter) StartBatchSubmitting() error {
 			return fmt.Errorf("error waiting for node sync: %w", err)
 		}
 	}
+	l.forceChannel = make(chan int)
 
 	l.wg.Add(1)
 	go l.loop()
@@ -231,6 +234,22 @@ func (l *BatchSubmitter) StopBatchSubmitting(ctx context.Context) error {
 	l.cancelKillCtx()
 
 	l.Log.Info("Batch Submitter stopped")
+	return nil
+}
+
+// ForceBatchSubmit force closing a channel and submit on l1.
+func (l *BatchSubmitter) ForceBatchSubmit(ctx context.Context) error {
+	l.Log.Info("Force Batch submitted")
+
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	if !l.running {
+		return ErrBatcherNotRunning
+	}
+
+	l.forceChannel <- 1
+
 	return nil
 }
 
@@ -471,6 +490,18 @@ func (l *BatchSubmitter) loop() {
 				continue
 			}
 			l.publishStateToL1(queue, receiptsCh, daGroup)
+		case <-l.forceChannel:
+			// Force close the channel and submit it to L1
+			l.Log.Warn("Forcing channel submission")
+			err := l.state.CloseAndSubmitCurrentChannel()
+			if !errors.Is(err, ErrPendingAfterClose) {
+				l.Log.Error("Error forcing channel submission", "err", err)
+				l.clearState(l.shutdownCtx)
+				continue
+			}
+			publishAndWait()
+			l.clearState(l.shutdownCtx)
+			l.Log.Warn("Finished forcing channel submission")
 		case <-l.shutdownCtx.Done():
 			if l.Txmgr.IsClosed() {
 				l.Log.Info("Txmgr is closed, remaining channel data won't be sent")
